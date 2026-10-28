@@ -1,0 +1,202 @@
+import pygame
+import random
+import math
+import pygame.font
+from time import sleep
+
+pygame.init()
+
+y = int(input("请输入行数："))
+x = int(input("请输入列数："))
+num_mines = int(input("请输入雷的数量："))
+CELL_SIZE = int(input("请输入每个格子的大小（推荐值为50）："))
+
+while num_mines >= x * y:
+    print("雷的数量不能大于或等于网格的总格子数，请重新输入。")
+    y = int(input("请输入行数："))
+    x = int(input("请输入列数："))
+    num_mines = int(input("请输入雷的数量："))
+
+while CELL_SIZE <= 0:
+    print("格子的大小必须是正整数，请重新输入。")
+    CELL_SIZE = int(input("请输入每个格子的大小（推荐值为50）："))
+
+default_font_path = pygame.font.get_default_font()
+font = pygame.font.Font(default_font_path, max(1, CELL_SIZE // 2))
+
+
+def format_radical(n):
+    """把 n 显示成最简根式，例如 5 -> √5，8 -> 2√2，36 -> 6。"""
+    if n == 0:
+        return "0"
+
+    outside = 1
+    inside = n
+    i = 2
+
+    while i * i <= inside:
+        while inside % (i * i) == 0:
+            outside *= i
+            inside //= (i * i)
+        i += 1
+
+    if inside == 1:
+        return str(outside)
+    if outside == 1:
+        return "√" + str(inside)
+    return str(outside) + "√" + str(inside)
+
+
+# 先选不重复的 (行,列)，再给每个雷随机分配 z=-1/0/1
+all_positions = [(r, c) for r in range(y) for c in range(x)]
+mine_xy = random.sample(all_positions, num_mines)
+
+mines = set()
+for r, c in mine_xy:
+    z = random.choice([-1, 0, 1])
+    mines.add((r, c, z))
+
+# board0 是“投影到 0 层”的二维雷表：
+# 只要 (r,c,-1)、(r,c,0)、(r,c,1) 任意一个有雷，board0[r][c] = 1
+board0 = [[0 for _ in range(x)] for _ in range(y)]
+for r in range(y):
+    for c in range(x):
+        if any((r, c, z) in mines for z in (-1, 0, 1)):
+            board0[r][c] = 1
+
+
+def count_adjacent_mines_3d(row, col):
+    """
+    计算 0 层格子 (row, col, 0) 周围 3×3×3 范围内的雷数信息。
+    count：雷的数量，即每个雷贡献 1。
+    z_sum：这些雷的 z 坐标之和。
+    返回 n = count^2 + z_sum^2，实际显示为 √n。
+    """
+    count = 0
+    z_sum = 0
+
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                nr, nc, nz = row + dr, col + dc, 0 + dz
+                if (nr, nc, nz) in mines:
+                    count += 1
+                    z_sum += nz
+
+    n = count * count + z_sum * z_sum
+    return count, z_sum, n
+
+
+WIDTH, HEIGHT = CELL_SIZE * x, CELL_SIZE * y
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("扫雷")
+
+WHITE = (255, 255, 255)
+BLUE = (50, 60, 255)
+GRAY = (200, 200, 200)
+
+hidden_grid = [[BLUE for _ in range(x)] for _ in range(y)]
+revealed = [[False for _ in range(x)] for _ in range(y)]
+
+
+class cell:
+    def __init__(self, row, col, value):
+        self.row = row
+        self.col = col
+        self.value = value
+
+
+d = {}
+
+
+def reveal(row, col):
+    """
+    递归展开函数。
+    1. 越界、已翻开、投影有雷的格子直接返回。
+    2. 翻开当前格并标灰。
+    3. 计算当前格根式雷数 n。
+    4. 如果 n > 0，则渲染根式文本。
+    5. 如果 n == 0，说明 3×3×3 邻域内没有雷，递归翻开 0 层周围 8 格。
+    """
+    if not (0 <= row < y and 0 <= col < x):
+        return
+    if revealed[row][col]:
+        return
+    if board0[row][col] == 1:
+        return
+
+    revealed[row][col] = True
+    hidden_grid[row][col] = GRAY
+
+    count, z_sum, n = count_adjacent_mines_3d(row, col)
+
+    if n > 0:
+        text = font.render(format_radical(n), True, BLUE)
+        d[(row, col)] = cell(row, col, text)
+
+    if n == 0:
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = row + dr, col + dc
+                if 0 <= nr < y and 0 <= nc < x and board0[nr][nc] == 0:
+                    reveal(nr, nc)
+
+
+def check_win():
+    """所有投影到 0 层后没有雷的格子都被翻开，则胜利。"""
+    for r in range(y):
+        for c in range(x):
+            if board0[r][c] == 0 and not revealed[r][c]:
+                return False
+    return True
+
+
+running = True
+
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            mouse_x, mouse_y = pygame.mouse.get_pos()
+            col = mouse_x // CELL_SIZE
+            row = mouse_y // CELL_SIZE
+
+            if 0 <= row < y and 0 <= col < x:
+                if revealed[row][col]:
+                    continue
+
+                # 只要该 (row, col) 在任意 z 层有雷，点击 0 层也算踩雷
+                if board0[row][col] == 1:
+                    print("游戏结束！你踩到了雷！")
+                    pygame.quit()
+                    sleep(3)
+                    exit()
+
+                reveal(row, col)
+
+                if check_win():
+                    print("恭喜你！你赢了！")
+                    pygame.quit()
+                    sleep(3)
+                    exit()
+
+    for row in range(y):
+        for col in range(x):
+            rect = pygame.Rect(col * CELL_SIZE, row * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+            pygame.draw.rect(screen, hidden_grid[row][col], rect)
+            pygame.draw.rect(screen, GRAY, rect, 1)
+
+    for cell_obj in d.values():
+        text_rect = cell_obj.value.get_rect(center=(
+            cell_obj.col * CELL_SIZE + CELL_SIZE // 2,
+            cell_obj.row * CELL_SIZE + CELL_SIZE // 2
+        ))
+        screen.blit(cell_obj.value, text_rect)
+
+    pygame.display.flip()
+
+pygame.quit()
